@@ -3,9 +3,11 @@
 #include <SPI.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
-
 #include <InfluxDbClient.h>
 #include <Arduino.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+
 // Personal credentials, not included in GitHUB
 #include <credentials.h>
 
@@ -13,19 +15,30 @@
 #if defined(ESP32)
 #include <WiFiMulti.h>
 WiFiMulti wifiMulti;
-#define DEVICE "ESP32"
+#define DEVICE "ESP32_Garage"
 #elif defined(ESP8266)
 #include <ESP8266WiFiMulti.h>
-ESP8266WiFiMulti wifiMulti;
+
+
+
+// Definition of sensor variant, must be unique for each sensor
 #define DEVICE "ESP8266_Garage"
 #endif
 
 // Define Block
 #define SEALEVELPRESSURE_HPA (1013.25)
 
-
+// create instance of ESP8266 multiwifi
+ESP8266WiFiMulti wifiMulti;
 // InfluxDB client instance for InfluxDB 1
 InfluxDBClient client(INFLUXDB_URL, INFLUXDB_DB_NAME);
+ 
+// BME Instance
+Adafruit_BME280 bme; //I2C
+
+// NTP 
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0);
 
 // Data point definition
 Point myWifi("wifi_status");
@@ -36,10 +49,9 @@ Point myDewPoint("dewpoint");
 Point myPressRel("pressure_rel");
 Point myPressAbs("pressure_abs");
 
-// BME Instance
-Adafruit_BME280 bme; //I2C
 
-unsigned long delayTime;
+unsigned long delayTime = 60;
+unsigned long lastRun = 0;
 
 void setup() {
   // Start serial console
@@ -54,6 +66,13 @@ void setup() {
     Serial.print(".");
     delay(100);
   }
+  Serial.println('\n');
+  Serial.print("Connected to ");
+  // Tell us what network we're connected to
+  Serial.println(WiFi.SSID());              
+  // Send the IP address of the ESP8266 to the computer
+  Serial.print("IP address:\t");
+  Serial.println(WiFi.localIP());           
   Serial.println();
   
   // Start BME280 communication
@@ -90,45 +109,59 @@ void setup() {
     Serial.print("InfluxDB connection failed: ");
     Serial.println(client.getLastErrorMessage());
   }
+
+  // start Timeclient
+  timeClient.begin();
 }
 
 void loop() {
-  // Store measured value into point
-  myWifi.clearFields();
-  myTemp.clearFields();
-  myDewPoint.clearFields();
-  myHumAbs.clearFields();
-  myHumRel.clearFields();
-  myPressAbs.clearFields();
-  myPressRel.clearFields();
-
-  // Gather infos from BME280
   
-  myTemp.addField("temperature", bme.readTemperature());
-  myPressRel.addField("pressure_rel", bme.readPressure() / 100.0F);
-  myHumRel.addField("humidity_rel", bme.readHumidity());
+  // aktuelle Zeit holen
+  timeClient.update();
+  if (lastRun <= timeClient.getEpochTime() + delayTime) {
+    lastRun = timeClient.getEpochTime();
+    // Print current unitime
+    Serial.println(lastRun);
+    Serial.println("---------------------------------");
+    // Store measured value into point
+    myWifi.clearFields();
+    myTemp.clearFields();
+    myDewPoint.clearFields();
+    myHumAbs.clearFields();
+    myHumRel.clearFields();
+    myPressAbs.clearFields();
+    myPressRel.clearFields();
 
-  // Gather infos from S0 Bus
+    // Gather infos from BME280
+    myTemp.addField("temperature", bme.readTemperature());
+    myPressRel.addField("pressure_rel", bme.readPressure() / 100.0F);
+    myHumRel.addField("humidity_rel", bme.readHumidity());
+    //myHumAbs.addField("humidity_abs", add abs humidity calculation)
+    //myDewPoint.addField("Dewpoint", add dewpoint calculation
 
 
-  // Report RSSI of currently connected network
-  myWifi.addField("rssi", WiFi.RSSI());
-  
-  // Print what are we exactly writing
-  Serial.print("Writing: ");
-  Serial.println(myWifi.toLineProtocol());
-  Serial.print("Writing: ");
-  Serial.println(myTemp.toLineProtocol());
-  Serial.print("Writing: ");
-  Serial.println(myDewPoint.toLineProtocol());
-  Serial.print("Writing: ");
-  Serial.println(myHumAbs.toLineProtocol());
-  Serial.print("Writing: ");
-  Serial.println(myHumRel.toLineProtocol());
-  Serial.print("Writing: ");
-  Serial.println(myPressRel.toLineProtocol());
-  Serial.print("Writing: ");
-  Serial.println(myPressAbs.toLineProtocol());
+    // Gather infos from S0 Bus @sebatro 
+      
+
+    // Report RSSI of currently connected network
+    myWifi.addField("rssi", WiFi.RSSI());
+     
+    // Print what are we exactly writing
+    Serial.print("Writing: ");
+    Serial.println(myWifi.toLineProtocol());
+    Serial.print("Writing: ");
+    Serial.println(myTemp.toLineProtocol());
+    Serial.print("Writing: ");
+    Serial.println(myDewPoint.toLineProtocol());
+    Serial.print("Writing: ");
+    Serial.println(myHumAbs.toLineProtocol());
+    Serial.print("Writing: ");
+    Serial.println(myHumRel.toLineProtocol());
+    Serial.print("Writing: ");
+    Serial.println(myPressRel.toLineProtocol());
+    Serial.print("Writing: ");
+    Serial.println(myPressAbs.toLineProtocol());
+  }
   
   // If no Wifi signal, try to reconnect it
   if ((WiFi.RSSI() == 0) && (wifiMulti.run() != WL_CONNECTED))
@@ -138,8 +171,5 @@ void loop() {
     Serial.print("InfluxDB write failed: ");
     Serial.println(client.getLastErrorMessage());
   }
-
-  //Wait 60s
-  Serial.println("Wait 60s");
-  delay(60000);
+       
 }
