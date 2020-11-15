@@ -136,12 +136,12 @@ void loop() {
     snprintf (msgPressA, MSG_BUFFER_SIZE, "%4.2f", pressure);
     snprintf (msgDewp, MSG_BUFFER_SIZE, "%4.2f", dew);
 
-    snprintf (topicTemp, MSG_BUFFER_SIZE, "/SENSOR/%S/TEMPERATUR", DEVICE);
-    snprintf (topicHumiA, MSG_BUFFER_SIZE, "/SENSOR/%S/LUFTFEUCHTE_ABS", DEVICE);
-    snprintf (topicHumiR, MSG_BUFFER_SIZE, "/SENSOR/%S/LUFTFEUCHTE_REL", DEVICE);
-    snprintf (topicPressR, MSG_BUFFER_SIZE, "/SENSOR/%S/LUFTDRUCK_REL", DEVICE);
-    snprintf (topicPressA, MSG_BUFFER_SIZE, "/SENSOR/%S/LUFTDRUCK_ABS", DEVICE);
-    snprintf (topicDewp, MSG_BUFFER_SIZE, "/SENSOR/%S/TAUPUNKT", DEVICE);
+    snprintf (topicTemp, MSG_BUFFER_SIZE, "/SENSOR/%C/TEMPERATUR", DEVICE);
+    snprintf (topicHumiA, MSG_BUFFER_SIZE, "/SENSOR/%C/LUFTFEUCHTE_ABS", DEVICE);
+    snprintf (topicHumiR, MSG_BUFFER_SIZE, "/SENSOR/%C/LUFTFEUCHTE_REL", DEVICE);
+    snprintf (topicPressR, MSG_BUFFER_SIZE, "/SENSOR/%C/LUFTDRUCK_REL", DEVICE);
+    snprintf (topicPressA, MSG_BUFFER_SIZE, "/SENSOR/%C/LUFTDRUCK_ABS", DEVICE);
+    snprintf (topicDewp, MSG_BUFFER_SIZE, "/SENSOR/%C/TAUPUNKT", DEVICE);
 
     // Publish to MQTT
     mqtt.publish(topicTemp, msgTemp);
