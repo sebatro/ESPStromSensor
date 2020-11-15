@@ -18,11 +18,11 @@
 #include <credentials.h>
 
 // Definition of sensor variant, must be unique for each sensor
-#define DEVICE "GARTEN"
+#define DEVICE "SZ_OG"
 #define MQTT_SERVER      "192.168.1.85"
 #define MQTT_SERVERPORT  1883                   // use 8883 for SSL
-#define MQTT_USERNAME    "mqtt"
-#define MQTT_KEY         "12345"
+#define MQTT_USERNAME    "espsensor"
+#define MQTT_KEY         "bkst81"
 
 // Define Block
 #define SEALEVELPRESSURE_HPA (1013.25)
@@ -48,15 +48,20 @@ char msgPressR[MSG_BUFFER_SIZE];
 char msgPressA[MSG_BUFFER_SIZE];
 char msgDewp[MSG_BUFFER_SIZE];
 char msgRSSI[MSG_BUFFER_SIZE];
+char msgRecon[MSG_BUFFER_SIZE];
+
+
 char topicTemp[MSG_BUFFER_SIZE];
 char topicHumiR[MSG_BUFFER_SIZE];
 char topicHumiA[MSG_BUFFER_SIZE];
 char topicPressR[MSG_BUFFER_SIZE];
 char topicPressA[MSG_BUFFER_SIZE];
 char topicDewp[MSG_BUFFER_SIZE];
+char topicRecon[MSG_BUFFER_SIZE];
+char topicRSSI[MSG_BUFFER_SIZE];
 
 const float cToKOffset = 273.15F;
-unsigned long delayTime = 60UL;
+unsigned long delayTime = 10UL;
 unsigned long lastRun = 0UL;
 
 float absoluteHumidity(float temperature, float humidity);
@@ -71,6 +76,7 @@ void setup() {
   unsigned status;
 
   // Connect to WiFi
+  WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -125,7 +131,7 @@ void loop() {
     float pressure = bme.readPressure() / 100.0F;
     float pressure_r = bme.seaLevelForAltitude(ALTITUDE, pressure);
     float dew = dewPoint(temperature, humidity_r);
-
+    
     // Gather infos from S0 Bus @sebatro 
       
     // convert to char
@@ -135,22 +141,25 @@ void loop() {
     snprintf (msgPressR, MSG_BUFFER_SIZE, "%4.2f", pressure_r);
     snprintf (msgPressA, MSG_BUFFER_SIZE, "%4.2f", pressure);
     snprintf (msgDewp, MSG_BUFFER_SIZE, "%4.2f", dew);
+    snprintf (msgRSSI, MSG_BUFFER_SIZE, "%i", WiFi.RSSI());
 
-    snprintf (topicTemp, MSG_BUFFER_SIZE, "/SENSOR/%C/TEMPERATUR", DEVICE);
-    snprintf (topicHumiA, MSG_BUFFER_SIZE, "/SENSOR/%C/LUFTFEUCHTE_ABS", DEVICE);
-    snprintf (topicHumiR, MSG_BUFFER_SIZE, "/SENSOR/%C/LUFTFEUCHTE_REL", DEVICE);
-    snprintf (topicPressR, MSG_BUFFER_SIZE, "/SENSOR/%C/LUFTDRUCK_REL", DEVICE);
-    snprintf (topicPressA, MSG_BUFFER_SIZE, "/SENSOR/%C/LUFTDRUCK_ABS", DEVICE);
-    snprintf (topicDewp, MSG_BUFFER_SIZE, "/SENSOR/%C/TAUPUNKT", DEVICE);
+    snprintf (topicTemp, MSG_BUFFER_SIZE, "/SENSOR/%s/TEMPERATUR", DEVICE);
+    snprintf (topicHumiA, MSG_BUFFER_SIZE, "/SENSOR/%s/LUFTFEUCHTE_ABS", DEVICE);
+    snprintf (topicHumiR, MSG_BUFFER_SIZE, "/SENSOR/%s/LUFTFEUCHTE_REL", DEVICE);
+    snprintf (topicPressR, MSG_BUFFER_SIZE, "/SENSOR/%s/LUFTDRUCK_REL", DEVICE);
+    snprintf (topicPressA, MSG_BUFFER_SIZE, "/SENSOR/%s/LUFTDRUCK_ABS", DEVICE);
+    snprintf (topicDewp, MSG_BUFFER_SIZE, "/SENSOR/%s/TAUPUNKT", DEVICE);
+    snprintf (topicRSSI,MSG_BUFFER_SIZE, "/SENSOR/%s/RSSI", DEVICE);
 
     // Publish to MQTT
-    mqtt.publish(topicTemp, msgTemp);
-    mqtt.publish(topicHumiA, msgHumiA);
-    mqtt.publish(topicHumiR, msgHumiR);
-    mqtt.publish(topicPressR, msgPressR);
-    mqtt.publish(topicPressA, msgPressA);
-    mqtt.publish(topicDewp, msgDewp);
-
+    mqtt.publish(topicTemp, msgTemp, true);
+    mqtt.publish(topicHumiA, msgHumiA, true);
+    mqtt.publish(topicHumiR, msgHumiR, true);
+    mqtt.publish(topicPressR, msgPressR, true);
+    mqtt.publish(topicPressA, msgPressA, true);
+    mqtt.publish(topicDewp, msgDewp, true);
+    mqtt.publish(topicRSSI, msgRSSI, true);
+    
     // Print what are we exactly writing
   
     // If no Wifi signal, try to reconnect it
@@ -165,10 +174,13 @@ void MQTT_reconnect() {
     String clientId = DEVICE;
     clientId += String(random(0xffff), HEX);
     // Attempt to connect
-    if (mqtt.connect(clientId.c_str())) {
+    if (mqtt.connect(clientId.c_str(),MQTT_USERNAME, MQTT_KEY)) {
       Serial.println("connected");
       // Once connected, publish an announcement...
-      mqtt.publish("outTopic", "hello world");
+      timeClient.update();
+      snprintf (topicRecon, MSG_BUFFER_SIZE, "/SENSOR/%s/RECONNECT", DEVICE);
+      snprintf (msgRecon, MSG_BUFFER_SIZE, "Reconnected at: %lu", timeClient.getEpochTime());
+      mqtt.publish(topicRecon, msgRecon, true);
       // ... and resubscribe
       mqtt.subscribe("inTopic");
     } else {
