@@ -1,37 +1,35 @@
+/*
+* 
+*/
+
 // Include files
 #include <Wire.h>
 #include <SPI.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
-#include <InfluxDbClient.h>
 #include <Arduino.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
+#include <math.h>
+#include <PubSubClient.h>
+#include <ESP8266WiFi.h>
 
 // Personal credentials, not included in GitHUB
 #include <credentials.h>
 
-// Device selection
-#if defined(ESP32)
-#include <WiFiMulti.h>
-WiFiMulti wifiMulti;
-#define DEVICE "ESP32_Garage"
-#elif defined(ESP8266)
-#include <ESP8266WiFiMulti.h>
-
-
-
 // Definition of sensor variant, must be unique for each sensor
-#define DEVICE "ESP8266_Garage"
-#endif
+#define DEVICE "GARTEN"
+#define MQTT_SERVER      "192.168.1.85"
+#define MQTT_SERVERPORT  1883                   // use 8883 for SSL
+#define MQTT_USERNAME    "mqtt"
+#define MQTT_KEY         "12345"
 
 // Define Block
 #define SEALEVELPRESSURE_HPA (1013.25)
+#define ALTITUDE 324 //Altitude of your location (m above sea level)
 
 // create instance of ESP8266 multiwifi
-ESP8266WiFiMulti wifiMulti;
-// InfluxDB client instance for InfluxDB 1
-InfluxDBClient client(INFLUXDB_URL, INFLUXDB_DB_NAME);
+WiFiClient wifi;
  
 // BME Instance
 Adafruit_BME280 bme; //I2C
@@ -40,18 +38,32 @@ Adafruit_BME280 bme; //I2C
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", 0);
 
-// Data point definition
-Point myWifi("wifi_status");
-Point myTemp("temperature");
-Point myHumRel("humidity_rel");
-Point myHumAbs("humidity_abs");
-Point myDewPoint("dewpoint");
-Point myPressRel("pressure_rel");
-Point myPressAbs("pressure_abs");
+// MQTT client
+PubSubClient mqtt(wifi);
+#define MSG_BUFFER_SIZE	(50)
+char msgTemp[MSG_BUFFER_SIZE];
+char msgHumiR[MSG_BUFFER_SIZE];
+char msgHumiA[MSG_BUFFER_SIZE];
+char msgPressR[MSG_BUFFER_SIZE];
+char msgPressA[MSG_BUFFER_SIZE];
+char msgDewp[MSG_BUFFER_SIZE];
+char msgRSSI[MSG_BUFFER_SIZE];
+char topicTemp[MSG_BUFFER_SIZE];
+char topicHumiR[MSG_BUFFER_SIZE];
+char topicHumiA[MSG_BUFFER_SIZE];
+char topicPressR[MSG_BUFFER_SIZE];
+char topicPressA[MSG_BUFFER_SIZE];
+char topicDewp[MSG_BUFFER_SIZE];
 
+const float cToKOffset = 273.15F;
+unsigned long delayTime = 60UL;
+unsigned long lastRun = 0UL;
 
-unsigned long delayTime = 60;
-unsigned long lastRun = 0;
+float absoluteHumidity(float temperature, float humidity);
+float saturationVaporPressure(float temperature);
+float dewPoint(float temperature, float humidity);
+
+void MQTT_reconnect();
 
 void setup() {
   // Start serial console
@@ -59,21 +71,15 @@ void setup() {
   unsigned status;
 
   // Connect to WiFi
-  Serial.println("Connecting to WiFi");
-  WiFi.mode(WIFI_STA);
-  wifiMulti.addAP(WIFI_SSID, WIFI_PASSWORD);
-  while (wifiMulti.run() != WL_CONNECTED) {
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
     Serial.print(".");
-    delay(100);
   }
-  Serial.println('\n');
-  Serial.print("Connected to ");
-  // Tell us what network we're connected to
-  Serial.println(WiFi.SSID());              
-  // Send the IP address of the ESP8266 to the computer
-  Serial.print("IP address:\t");
-  Serial.println(WiFi.localIP());           
   Serial.println();
+
+  Serial.println("WiFi connected");
+  Serial.println("IP address: "); Serial.println(WiFi.localIP());
   
   // Start BME280 communication
   status = bme.begin(0x76);
@@ -88,27 +94,8 @@ void setup() {
     while (1) delay(10);    
   }
 
-  // Set InfluxDB 1 authentication params
-  client.setConnectionParamsV1(INFLUXDB_URL, INFLUXDB_DB_NAME, INFLUXDB_USER, INFLUXDB_PASSWORD);
-
-  // Add constant tags - only once
-  myWifi.addTag("device", DEVICE);
-  myWifi.addTag("SSID", WiFi.SSID());
-  myTemp.addTag("device", DEVICE);
-  myDewPoint.addTag("device", DEVICE);
-  myHumRel.addTag("device", DEVICE);
-  myHumAbs.addTag("device", DEVICE);
-  myPressRel.addTag("device", DEVICE);
-  myPressAbs.addTag("device", DEVICE);
-  
-  // Check server connection
-  if (client.validateConnection()) {
-    Serial.print("Connected to InfluxDB: ");
-    Serial.println(client.getServerUrl());
-  } else {
-    Serial.print("InfluxDB connection failed: ");
-    Serial.println(client.getLastErrorMessage());
-  }
+  // start MQTT connecttio
+  mqtt.setServer(MQTT_SERVER, MQTT_SERVERPORT);
 
   // start Timeclient
   timeClient.begin();
@@ -118,58 +105,160 @@ void loop() {
   
   // aktuelle Zeit holen
   timeClient.update();
-  if (lastRun <= timeClient.getEpochTime() + delayTime) {
+
+  if (!mqtt.connected()) {
+    MQTT_reconnect();
+  }
+  mqtt.loop();
+
+  if (timeClient.getEpochTime() > (lastRun + delayTime)) {
     lastRun = timeClient.getEpochTime();
     // Print current unitime
     Serial.println(lastRun);
     Serial.println("---------------------------------");
     // Store measured value into point
-    myWifi.clearFields();
-    myTemp.clearFields();
-    myDewPoint.clearFields();
-    myHumAbs.clearFields();
-    myHumRel.clearFields();
-    myPressAbs.clearFields();
-    myPressRel.clearFields();
 
     // Gather infos from BME280
-    myTemp.addField("temperature", bme.readTemperature());
-    myPressRel.addField("pressure_rel", bme.readPressure() / 100.0F);
-    myHumRel.addField("humidity_rel", bme.readHumidity());
-    //myHumAbs.addField("humidity_abs", add abs humidity calculation)
-    //myDewPoint.addField("Dewpoint", add dewpoint calculation
-
+    float temperature = bme.readTemperature();
+    float humidity_r = bme.readHumidity();
+    float humidity = absoluteHumidity(temperature, humidity_r);
+    float pressure = bme.readPressure() / 100.0F;
+    float pressure_r = bme.seaLevelForAltitude(ALTITUDE, pressure);
+    float dew = dewPoint(temperature, humidity_r);
 
     // Gather infos from S0 Bus @sebatro 
       
+    // convert to char
+    snprintf (msgTemp, MSG_BUFFER_SIZE, "%4.2f", temperature);
+    snprintf (msgHumiA, MSG_BUFFER_SIZE, "%4.2f", humidity);
+    snprintf (msgHumiR, MSG_BUFFER_SIZE, "%4.2f", humidity_r);
+    snprintf (msgPressR, MSG_BUFFER_SIZE, "%4.2f", pressure_r);
+    snprintf (msgPressA, MSG_BUFFER_SIZE, "%4.2f", pressure);
+    snprintf (msgDewp, MSG_BUFFER_SIZE, "%4.2f", dew);
 
-    // Report RSSI of currently connected network
-    myWifi.addField("rssi", WiFi.RSSI());
-     
+    snprintf (topicTemp, MSG_BUFFER_SIZE, "/SENSOR/%S/TEMPERATUR", DEVICE);
+    snprintf (topicHumiA, MSG_BUFFER_SIZE, "/SENSOR/%S/LUFTFEUCHTE_ABS", DEVICE);
+    snprintf (topicHumiR, MSG_BUFFER_SIZE, "/SENSOR/%S/LUFTFEUCHTE_REL", DEVICE);
+    snprintf (topicPressR, MSG_BUFFER_SIZE, "/SENSOR/%S/LUFTDRUCK_REL", DEVICE);
+    snprintf (topicPressA, MSG_BUFFER_SIZE, "/SENSOR/%S/LUFTDRUCK_ABS", DEVICE);
+    snprintf (topicDewp, MSG_BUFFER_SIZE, "/SENSOR/%S/TAUPUNKT", DEVICE);
+
+    // Publish to MQTT
+    mqtt.publish(topicTemp, msgTemp);
+    mqtt.publish(topicHumiA, msgHumiA);
+    mqtt.publish(topicHumiR, msgHumiR);
+    mqtt.publish(topicPressR, msgPressR);
+    mqtt.publish(topicPressA, msgPressA);
+    mqtt.publish(topicDewp, msgDewp);
+
     // Print what are we exactly writing
-    Serial.print("Writing: ");
-    Serial.println(myWifi.toLineProtocol());
-    Serial.print("Writing: ");
-    Serial.println(myTemp.toLineProtocol());
-    Serial.print("Writing: ");
-    Serial.println(myDewPoint.toLineProtocol());
-    Serial.print("Writing: ");
-    Serial.println(myHumAbs.toLineProtocol());
-    Serial.print("Writing: ");
-    Serial.println(myHumRel.toLineProtocol());
-    Serial.print("Writing: ");
-    Serial.println(myPressRel.toLineProtocol());
-    Serial.print("Writing: ");
-    Serial.println(myPressAbs.toLineProtocol());
+  
+    // If no Wifi signal, try to reconnect it
+  }     
+}
+
+void MQTT_reconnect() {
+  // Loop until we're reconnected
+  while (!mqtt.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Create a random client ID
+    String clientId = DEVICE;
+    clientId += String(random(0xffff), HEX);
+    // Attempt to connect
+    if (mqtt.connect(clientId.c_str())) {
+      Serial.println("connected");
+      // Once connected, publish an announcement...
+      mqtt.publish("outTopic", "hello world");
+      // ... and resubscribe
+      mqtt.subscribe("inTopic");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(mqtt.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
+
+// Relative to absolute humidity
+// Based on https://carnotcycle.wordpress.com/2012/08/04/how-to-convert-relative-humidity-to-absolute-humidity/
+float absoluteHumidity(float temperature, float humidity) {
+  return (13.2471*pow(EULER,17.67*temperature/(temperature+243.5))*humidity/(cToKOffset+temperature));
+}
+
+// Calculate saturation vapor pressure
+// Based on dew.js, Copyright 2011 Wolfgang Kuehn, Apache License 2.0
+float saturationVaporPressure(float temperature) {
+  if(temperature < 173 || temperature > 678) return -112; //Temperature out of range
+
+  float svp = 0;
+  if(temperature <= cToKOffset) {
+    /**
+      * -100-0°C -> Saturation vapor pressure over ice
+      * ITS-90 Formulations by Bob Hardy published in 
+      * "The Proceedings of the Third International 
+      * Symposium on Humidity & Moisture",
+      * Teddington, London, England, April 1998
+      */
+
+    svp = exp(-5.8666426e3/temperature + 2.232870244e1 + (1.39387003e-2 + (-3.4262402e-5 + (2.7040955e-8*temperature)) * temperature) * temperature + 6.7063522e-1 * log(temperature)); 
+  }else{
+    /**
+      * 0°C-400°C -> Saturation vapor pressure over water
+      * IAPWS Industrial Formulation 1997
+      * for the Thermodynamic Properties of Water and Steam
+      * by IAPWS (International Association for the Properties
+      * of Water and Steam), Erlangen, Germany, September 1997.
+      * Equation 30 in Section 8.1 "The Saturation-Pressure 
+      * Equation (Basic Equation)"
+      */
+
+    const float th = temperature + -0.23855557567849 / (temperature - 0.65017534844798e3);
+    const float a  = (th + 0.11670521452767e4) * th + -0.72421316703206e6;
+    const float b  = (-0.17073846940092e2 * th + 0.12020824702470e5) * th + -0.32325550322333e7;
+    const float c  = (0.14915108613530e2 * th + -0.48232657361591e4) * th + 0.40511340542057e6;
+
+    svp = 2 * c / (-b + sqrt(b * b - 4 * a * c));
+    svp *= svp;
+    svp *= svp;
+    svp *= 1e6;
   }
   
-  // If no Wifi signal, try to reconnect it
-  if ((WiFi.RSSI() == 0) && (wifiMulti.run() != WL_CONNECTED))
-    Serial.println("Wifi connection lost");
-  // Write point
-  if (!client.writePoint(myWifi)) {
-    Serial.print("InfluxDB write failed: ");
-    Serial.println(client.getLastErrorMessage());
-  }
-       
+  yield();
+
+  return svp;
+}
+
+
+// Calculate dew point in °C
+// Based on dew.js, Copyright 2011 Wolfgang Kuehn, Apache License 2.0
+float dewPoint(float temperature, float humidity)
+{
+  temperature += cToKOffset; //Celsius to Kelvin
+
+  if(humidity < 0 || humidity > 100) return -111; //Invalid humidity
+  if(temperature < 173 || temperature > 678) return -112; //Temperature out of range
+
+  humidity = humidity / 100 * saturationVaporPressure(temperature);
+  
+  byte mc = 10;
+
+  float xNew;
+  float dx;
+  float z;
+
+  do {
+    dx = temperature / 1000;
+    z = saturationVaporPressure(temperature);
+    xNew = temperature + dx * (humidity - z) / (saturationVaporPressure(temperature + dx) - z);
+    if (abs((xNew - temperature) / xNew) < 0.0001) {
+        return xNew - cToKOffset;
+    }
+    temperature = xNew;
+    mc--;
+  } while(mc > 0);
+
+  return -113; //Solver did not get a close result
 }
