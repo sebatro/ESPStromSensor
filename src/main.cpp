@@ -18,7 +18,7 @@
 #include <credentials.h>
 
 // Definition of sensor variant, must be unique for each sensor
-#define DEVICE "SZ_OG"
+#define DEVICE "GARTEN"
 #define MQTT_SERVER      "192.168.1.85"
 #define MQTT_SERVERPORT  1883                   // use 8883 for SSL
 #define MQTT_USERNAME    "espsensor"
@@ -133,6 +133,8 @@ void loop() {
     float dew = dewPoint(temperature, humidity_r);
     
     // Gather infos from S0 Bus @sebatro 
+
+    // Gather infos from RS485 solar inverter
       
     // convert to char
     snprintf (msgTemp, MSG_BUFFER_SIZE, "%4.2f", temperature);
@@ -167,8 +169,14 @@ void loop() {
 }
 
 void MQTT_reconnect() {
+  // max 20 reconnects then reboot
+  int counter = 0;
   // Loop until we're reconnected
   while (!mqtt.connected()) {
+    counter++;
+    if (counter >= 20) {
+      system_upgrade_reboot();
+    }
     Serial.print("Attempting MQTT connection...");
     // Create a random client ID
     String clientId = DEVICE;
